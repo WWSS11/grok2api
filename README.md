@@ -267,25 +267,6 @@ docker run -p 8000:8000 -v ./data:/app/data grok2api
 
 支持多进程部署，Leader 进程负责配额刷新，Follower 进程只做增量同步。基于 `flock` 文件锁自动选举。
 
-## 项目结构
-
-```
-├── main.go                    # 入口，13 步启动生命周期
-├── lock_unix.go               # Unix 文件锁 (flock)
-├── lock_windows.go            # Windows 锁 (always-leader)
-├── config.defaults.toml       # 默认配置
-├── API.md                     # API 文档
-├── internal/
-│   ├── account/               # 多账号池：Record、Directory（选号/租约/反馈）、Repository、JSONL 文本存储、状态机、配额、刷新
-│   ├── api/                   # HTTP 处理：Gin 路由/中间件，OpenAI/Anthropic/Admin 端点、SSE
-│   ├── config/                # TOML 配置加载、热重载
-│   ├── grok/                  # 上游协议：TLS 传输、请求头、聊天载荷、SSE 流适配、gRPC-Web
-│   ├── logger/                # 分级日志，按日轮转
-│   ├── model/                 # 模型注册表（33 个模型）
-│   ├── platform/              # 错误类型、路径工具
-│   └── storage/               # 媒体文件缓存（LRU 淘汰）
-└── data/                      # 运行时数据（accounts.jsonl、缓存、日志）
-```
 
 ## 常见问题
 
@@ -314,7 +295,7 @@ A: 直接启动多个进程，自动通过文件锁选举 Leader。Leader 负责
 
 ## 致谢
 
-Go 语言版本基于上游 Python 项目移植。
+https://github.com/chenyme/grok2api
 
 ## 许可
 
