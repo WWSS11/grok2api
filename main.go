@@ -105,20 +105,9 @@ func main() {
 
 	// 6. Reconcile the runtime selection strategy from config.
 	refreshEnabled := cfg.GetBool("account.refresh.enabled", false)
-	strategy := account.ReconcileRuntime(directory, refreshEnabled)
+	_ = account.ReconcileRuntime(directory, refreshEnabled)
 
-	// 7. Leader election via advisory file lock. Exactly one process wins
-	//    the lock and runs the heavy refresh loops.
-	lockPath := platform.DataPath(".scheduler.lock")
-	_ = os.MkdirAll(filepath.Dir(lockPath), 0o755)
-	isLeader := tryAcquireSchedulerLock(lockPath)
-	if isLeader {
-		logger.Infof("scheduler leader: pid=%d strategy=%s", os.Getpid(), strategy)
-	} else {
-		logger.Infof("scheduler follower: pid=%d strategy=%s", os.Getpid(), strategy)
-	}
-
-	// 8. Local media cache store (image/video) — rebuild indexes on startup.
+	// 7. Local media cache store (image/video) — rebuild indexes on startup.
 	mediaStore := storage.NewLocalMediaCacheStore()
 	if err := mediaStore.Rebuild(storage.MediaImage); err != nil {
 		logger.Warnf("media cache image rebuild failed: error=%v", err)
@@ -144,8 +133,8 @@ func main() {
 		runDirectorySyncLoop(ctx, directory, syncIdleInterval, syncActiveInterval, syncIdleAfter)
 	}()
 
-	// 10b. Per-pool quota refresh loops — leader only.
-	if isLeader && refreshEnabled {
+	// 10b. Per-pool quota refresh loops.
+	if refreshEnabled {
 		pools := []string{"basic", "super", "heavy"}
 		for _, pool := range pools {
 			p := pool
@@ -159,21 +148,20 @@ func main() {
 		}
 	}
 
-	// 10c. Console-quota reset loop — leader only.
-	if isLeader {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			runConsoleResetLoop(ctx, refreshSvc, 30)
-		}()
 
-		// 10d. Console-expired recovery loop — leader only.
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			runConsoleRecoveryLoop(ctx, refreshSvc, 600)
-		}()
-	}
+	// 10c. Console-quota reset loop.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		runConsoleResetLoop(ctx, refreshSvc, 30)
+	}()
+
+	// 10d. Console-expired recovery loop.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		runConsoleRecoveryLoop(ctx, refreshSvc, 600)
+	}()
 
 	// 11. Start the HTTP server.
 	host := envOrDefault("SERVER_HOST", "0.0.0.0")
@@ -218,9 +206,6 @@ func main() {
 	}
 
 	wg.Wait()
-	if isLeader {
-		releaseSchedulerLock()
-	}
 	if err := repo.Close(context.Background()); err != nil {
 		logger.Warnf("repository close failed: error=%v", err)
 	}
