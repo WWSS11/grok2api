@@ -1,0 +1,16 @@
+# Binary
+/grok2api.exe
+/grok2api.exe~
+
+# Runtime data
+/data/
+/logs/
+
+# Environment
+/.env
+
+# Claude sessions
+/.claude/
+
+# Temp / test files
+/fresh-req.json
