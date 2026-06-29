@@ -296,7 +296,7 @@ A: 直接启动多个进程，自动通过文件锁选举 Leader。Leader 负责
 ## 致谢
 
 https://github.com/chenyme/grok2api
-
+本项目已在 [LINUX DO 社区](https://linux.do) 发布，感谢社区的支持与反馈。
 ## 许可
 
 MIT License
