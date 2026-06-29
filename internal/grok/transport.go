@@ -269,7 +269,7 @@ func (t *Transport) do(ctx context.Context, method, urlStr, token string, body i
 	if o.consoleMode {
 		headers = BuildConsoleHeaders(token, o.contentType, profile)
 	} else {
-		headers = BuildHTTPHeaders(token, o.contentType, o.origin, o.referer, profile)
+		headers = BuildHTTPHeaders(token, o.contentType, o.origin, o.referer, urlStr, method, profile)
 	}
 	if o.extraHeaders != nil {
 		for k, vs := range o.extraHeaders {

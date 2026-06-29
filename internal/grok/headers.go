@@ -3,16 +3,20 @@ package grok
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"math/big"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/aurora-develop/grok2api/internal/config"
+	"github.com/aurora-develop/grok2api/internal/grok/statsig"
 	"github.com/aurora-develop/grok2api/internal/platform"
 )
 
@@ -55,15 +59,36 @@ func extractCookieValue(cookieHeader, name string) string {
 	return m[1]
 }
 
-// BuildSSOCookie builds the Cookie header value for an SSO-authenticated request:
-// "sso=<token>; sso-rw=<token>; grok_device_id=<uuid>[; cf_clearance=<clearance>][; <other cf cookies>]".
+// BuildSSOCookie builds the Cookie header value for an SSO-authenticated request.
+// Includes all cookies observed in browser: sso, sso-rw, grok_device_id, x-anonuserid,
+// x-challenge, x-signature, x-userid, cf_clearance, __cf_bm, and other cf cookies.
 func BuildSSOCookie(ssoToken string, profile proxyProfile) string {
 	tok := platform.SanitizeToken(ssoToken)
+
 	deviceID := strings.TrimSpace(config.Global().GetStr("proxy.clearance.device_id", ""))
 	if deviceID == "" {
 		deviceID = uuid.NewString()
 	}
+
 	cookie := "sso=" + tok + "; sso-rw=" + tok + "; grok_device_id=" + deviceID
+
+	// Prepend x- cookies observed in browser request, read from config
+	anonUserID := strings.TrimSpace(config.Global().GetStr("proxy.clearance.x_anonuserid", ""))
+	if anonUserID != "" {
+		cookie += "; x-anonuserid=" + anonUserID
+	}
+	xChallenge := strings.TrimSpace(config.Global().GetStr("proxy.clearance.x_challenge", ""))
+	if xChallenge != "" {
+		cookie += "; x-challenge=" + xChallenge
+	}
+	xSignature := strings.TrimSpace(config.Global().GetStr("proxy.clearance.x_signature", ""))
+	if xSignature != "" {
+		cookie += "; x-signature=" + xSignature
+	}
+	xUserID := strings.TrimSpace(config.Global().GetStr("proxy.clearance.x_userid", ""))
+	if xUserID != "" {
+		cookie += "; x-userid=" + xUserID
+	}
 
 	cfCookies := strings.TrimSpace(profile.CFCookies)
 	clearance := strings.TrimSpace(profile.CFClearance)
@@ -83,12 +108,64 @@ func BuildSSOCookie(ssoToken string, profile proxyProfile) string {
 	return cookie
 }
 
-// statsigID returns the x-statsig-id header value.
-func statsigID() string {
+// statsigID returns the x-statsig-id header value for a (pathname, method).
+//
+// Priority:
+//  1. proxy.clearance.statsig_id — a full fixed value (manual override).
+//  2. Real pure-Go generation via the statsig package. An optional genuine
+//     (seed, HEX) pair from config (proxy.clearance.statsig_seed / _hex) is
+//     applied so it can be refreshed without a rebuild if grok rotates the
+//     algorithm; otherwise the package's embedded default pair is used.
+//  3. Fallback to the legacy error-format fake if generation fails.
+func statsigID(pathname, method string) string {
 	cfg := config.Global()
 	if sid := strings.TrimSpace(cfg.GetStr("proxy.clearance.statsig_id", "")); sid != "" {
 		return sid
 	}
+	applyStatsigPairFromConfig()
+	if pathname == "" {
+		pathname = "/rest/app-chat/conversations/new"
+	}
+	if method == "" {
+		method = "POST"
+	}
+	if v, err := statsig.Generate(pathname, method, time.Now().Unix()); err == nil && v != "" {
+		return v
+	}
+	return statsigFallback()
+}
+
+// statsigPairState caches the last (seed, hex) applied from config so SetPair is
+// only called when the config actually changes.
+var (
+	statsigPairMu   sync.Mutex
+	statsigLastSeed string
+	statsigLastHEX  string
+)
+
+// applyStatsigPairFromConfig pushes a config-provided genuine (seed, HEX) pair
+// into the statsig package when present and changed. No-op when unset (the
+// package keeps its embedded default).
+func applyStatsigPairFromConfig() {
+	cfg := config.Global()
+	seed := strings.TrimSpace(cfg.GetStr("proxy.clearance.statsig_seed", ""))
+	hx := strings.TrimSpace(cfg.GetStr("proxy.clearance.statsig_hex", ""))
+	if seed == "" || hx == "" {
+		return
+	}
+	statsigPairMu.Lock()
+	defer statsigPairMu.Unlock()
+	if seed == statsigLastSeed && hx == statsigLastHEX {
+		return
+	}
+	if err := statsig.SetPair(seed, hx); err == nil {
+		statsigLastSeed, statsigLastHEX = seed, hx
+	}
+}
+
+// statsigFallback is the legacy error-format value used only if real generation
+// fails (kept so requests still carry a plausibly-shaped header).
+func statsigFallback() string {
 	var msg string
 	if randInt(2) == 0 {
 		r := randString(5, lowerAlphaDigits)
@@ -204,8 +281,9 @@ func archFromUA(u string) string {
 }
 
 // BuildHTTPHeaders builds the standard reverse-proxy headers for a grok.com
-// request. Returns standard net/http.Header.
-func BuildHTTPHeaders(ssoToken string, contentType, origin, referer string, profile proxyProfile) http.Header {
+// request. reqURL and method are used to compute the per-request x-statsig-id.
+// Returns standard net/http.Header.
+func BuildHTTPHeaders(ssoToken string, contentType, origin, referer, reqURL, method string, profile proxyProfile) http.Header {
 	ua := profile.UserAgent
 	if ua == "" {
 		ua = DefaultUserAgent
@@ -237,16 +315,17 @@ func BuildHTTPHeaders(ssoToken string, contentType, origin, referer string, prof
 	h.Set("Accept", accept)
 	h.Set("Accept-Encoding", "gzip, deflate, br, zstd")
 	h.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-	h.Set("Baggage", "sentry-environment=production,sentry-release=d6add6fb0460641fd482d767a335ef72b9b6abb8,sentry-public_key=b311e0f2690c81f25e2c4cf6d4f7ce1c")
+	h.Set("Baggage", "sentry-environment=production,sentry-release=7abc7fa0b441c5399d4efe48c6cab1b17c9d61d5,sentry-public_key=b311e0f2690c81f25e2c4cf6d4f7ce1c")
 	h.Set("Content-Type", contentType)
 	h.Set("Origin", orDefault(origin, "https://grok.com"))
-	h.Set("Priority", "u=1, i")
 	h.Set("Referer", orDefault(referer, "https://grok.com/"))
 	h.Set("Sec-Fetch-Dest", fetchDest)
 	h.Set("Sec-Fetch-Mode", "cors")
 	h.Set("Sec-Fetch-Site", site)
+	h.Set("sentry-trace", fmt.Sprintf("%s-%s-0", newTraceID(), newSpanID()))
+	h.Set("traceparent", fmt.Sprintf("00-%s-%s-00", newTraceID(), newSpanID()))
 	h.Set("User-Agent", ua)
-	h.Set("x-statsig-id", statsigID())
+	h.Set("x-statsig-id", statsigID(pathOf(reqURL), method))
 	h.Set("x-xai-request-id", uuid.NewString())
 
 	for k, v := range clientHints("", ua) {
@@ -303,6 +382,20 @@ func BuildGRPCWebHeaders(base http.Header) http.Header {
 	return base
 }
 
+// newTraceID generates a random 32-char hex trace ID.
+func newTraceID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// newSpanID generates a random 16-char hex span ID.
+func newSpanID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 // orDefault returns *v* if non-empty, else *def*.
 func orDefault(v, def string) string {
 	if v != "" {
@@ -320,4 +413,16 @@ func hostOf(rawURL string) string {
 		return ""
 	}
 	return u.Host
+}
+
+// pathOf returns the URL path (statsig is computed over the pathname only).
+func pathOf(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Path == "" {
+		return ""
+	}
+	return u.Path
 }
