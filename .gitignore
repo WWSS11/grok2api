@@ -11,7 +11,7 @@
 CLAUDE.md
 # Claude sessions
 /.claude/
-
+*.js
 # Temp / test files
 /fresh-req.json
 reverse_task/
