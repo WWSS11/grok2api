@@ -1,0 +1,17 @@
+.git
+.github
+.claude
+.env
+.env.*
+data
+logs
+task_plan.md
+findings.md
+progress.md
+fresh-req.json
+reverse_task
+README.md
+API.md
+CLAUDE.md
+*.exe
+*.tar.gz

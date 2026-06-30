@@ -10,5 +10,7 @@ FROM alpine:3.21
 RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 COPY --from=builder /app/grok2api .
+COPY config.defaults.toml .
+RUN mkdir -p /app/data /app/logs
 EXPOSE 8000
 ENTRYPOINT ["./grok2api"]

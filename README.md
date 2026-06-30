@@ -242,25 +242,59 @@ curl -X POST http://localhost:8000/admin/api/config \
 
 ## 部署
 
-### Docker
+### Docker Compose（推荐）
 
-```dockerfile
-FROM golang:1.25-alpine AS builder
-WORKDIR /app
-COPY . .
-RUN go build -o grok2api .
+仓库已包含适合云服务器直接运行的 [`compose.yaml`](compose.yaml)。
 
-FROM alpine:latest
-WORKDIR /app
-COPY --from=builder /app/grok2api .
-COPY config.defaults.toml .
-EXPOSE 8000
-CMD ["./grok2api"]
+这个方案默认使用 GitHub Actions 构建并推送到 GHCR 的镜像，而不是在服务器本地构建：
+
+```bash
+cp .env.example .env
+mkdir -p data logs
+docker compose pull
+docker compose up -d
 ```
+
+默认镜像地址来自 `.env`：
+
+```env
+IMAGE_REPO=ghcr.io/aurora-develop/grok2api
+IMAGE_TAG=latest
+```
+
+`compose.yaml` 已包含：
+
+- `./data:/app/data` 持久化账号与用户配置
+- `./logs:/app/logs` 持久化日志
+- `restart: unless-stopped`
+- `/health` 健康检查
+- `no-new-privileges` 与日志轮转限制
+
+首次部署后，将你的自定义配置写入 `data/config.toml`，例如：
+
+```toml
+[proxy.clearance]
+mode = "manual"
+cf_cookies = "cf_clearance=..."
+device_id = "..."
+statsig_id = "..."
+```
+
+常用命令：
+
+```bash
+docker compose logs -f
+docker compose pull && docker compose up -d
+docker compose ps
+```
+
+### Docker 镜像本地构建
+
+如果你确实需要手工构建镜像：
 
 ```bash
 docker build -t grok2api .
-docker run -p 8000:8000 -v ./data:/app/data grok2api
+docker run -p 8000:8000 -v ./data:/app/data -v ./logs:/app/logs grok2api
 ```
 
 ### 多实例
